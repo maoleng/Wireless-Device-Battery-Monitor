@@ -264,30 +264,42 @@ bool UltraQuery(HidDev& d, BYTE id, BYTE cmd, std::vector<BYTE>& r) {
     return false;
 }
 
-// 8K mouse on the Ultra-Link 8K receiver (Launcher protocol "8k" on FFC1:0001).
-void PollUltraLink(PollContext& ctx) {
-    for (const HidColl* c : ctx.Find(0x3434, kUltraLink8k, [](const HidColl& c) { return c.page() == 0xFFC1 && c.usage() == 0x01 && c.outLen() >= 21 && c.inLen() >= 21; })) {
+// Link-KM also exposes the Launcher "8k" protocol for the M6 (3434:D064, verified on hardware).
+void PollUltraLink(PollContext& ctx, USHORT receiverPid) {
+    constexpr USHORT kM6 = 0xD064;
+    const bool linkKm = receiverPid == kLinkKm;
+    for (const HidColl* c : ctx.Find(0x3434, receiverPid, [](const HidColl& c) { return c.page() == 0xFFC1 && c.usage() == 0x01 && c.outLen() >= 21 && c.inLen() >= 21; })) {
         HidDev d;
         if (!d.Open(*c)) continue;
         std::vector<BYTE> r;
         // Only ask when a mouse sits in a receiver slot and is connected.
         if (!UltraQuery(d, kUltraReceiverReport, 0x03, r)) continue;
+        if (linkKm && r[0] != 0xB6) continue;
         bool connected = false;
-        for (int off : {3, 8, 13})  // payload offsets 2/7/12 (+1 for the report id): vid LE16, pid LE16, status
-            connected = connected || ((r[off] | r[off + 1]) != 0 && r[off + 4] != 0);
+        for (int off : {3, 8, 13}) {  // three slots: vid LE16, pid LE16, status
+            USHORT vendor = (USHORT)(r[off] | (r[off + 1] << 8));
+            USHORT product = (USHORT)(r[off + 2] | (r[off + 3] << 8));
+            BYTE status = r[off + 4];
+            if (linkKm ? vendor == 0x3434 && product == kM6 && status == 1 : vendor != 0 && status != 0) {
+                connected = true;
+                break;
+            }
+        }
         if (!connected) continue;
         if (!UltraQuery(d, kUltraMouseReport, 0x06, r)) continue;
+        if (linkKm && r[0] != 0xB4) continue;
         BYTE power = r[20];  // payload byte 19
         int percent = power & 0x7F;
         if (percent < 1 || percent > 100) continue;
         DeviceStatus s;
-        s.key = L"keychron:" + Hex4(kUltraLink8k);
-        s.name = CleanName(HidProduct(*c));
+        s.key = L"keychron:" + Hex4(receiverPid);
+        if (linkKm) s.key += L":" + Hex4(kM6);
+        s.name = linkKm ? L"Keychron M6" : CleanName(HidProduct(*c));
         s.kind = DeviceKind::Mouse;
         s.via = L"2.4 GHz receiver";
         s.percent = percent;
         s.charging = (power & 0x80) != 0;
-        ctx.Add(s, 0x3434, kUltraLink8k);
+        ctx.Add(s, 0x3434, receiverPid);
         return;
     }
 }
@@ -297,7 +309,8 @@ void PollUltraLink(PollContext& ctx) {
 void PollKeychron(PollContext& ctx) {
     PollNape(ctx);
     PollLegacy(ctx);
-    PollUltraLink(ctx);
+    PollUltraLink(ctx, kUltraLink8k);
+    PollUltraLink(ctx, kLinkKm);
     for (auto [vid, pid] : ctx.Products(0x3434)) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.page() >= 0xFF00 && c.outLen() == 65 && c.inLen() == 65; })) {
             HidDev d;
