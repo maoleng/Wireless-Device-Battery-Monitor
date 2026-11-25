@@ -316,9 +316,30 @@ int main() {
     ctx = Poll(ultra, { { { 0xB5, 0x03 }, UltraSlots(0, 1) } });
     assert(ctx.out.empty() && ctx.claimed.empty());
 
+    // The M6 on Link-KM reports D064 in a B6 slot response and replies with B4 for battery.
+    auto linkKm = ultra;
+    linkKm.pid = 0xD026;
+    const auto m6Slot = UltraReply(0xB6, 0x03, { { 2, 0x34 }, { 3, 0x34 }, { 4, 0x64 }, { 5, 0xD0 }, { 6, 1 } });
+    ctx = Poll(linkKm, { { { 0xB5, 0x03 }, m6Slot },
+                         { { 0xB3, 0x06 }, UltraReply(0xB4, 0x06, { { 19, 0x64 } }) } });
+    assert((writes == std::vector<std::vector<BYTE>>{ kUltraAskSlots, kUltraAskBase }));
+    assert(ctx.out.size() == 1 && ctx.out[0].name == L"Keychron M6");
+    assert(ctx.out[0].percent == 100 && !ctx.out[0].charging && ctx.out[0].kind == DeviceKind::Mouse);
+    assert(ctx.out[0].key == L"keychron:D026:D064" && ctx.IsClaimed(0x3434, 0xD026));
+
+    auto otherMouseSlot = m6Slot;
+    otherMouseSlot[5] = 0x49;
+    auto offlineM6Slot = m6Slot;
+    offlineM6Slot[7] = 0;
+    for (const auto& slot : {otherMouseSlot, offlineM6Slot}) {
+        ctx = Poll(linkKm, { { { 0xB5, 0x03 }, slot } });
+        assert(ctx.out.empty() && ctx.claimed.empty());
+        assert((writes == std::vector<std::vector<BYTE>>{ kUltraAskSlots }));
+    }
+
     // Other collections on D028 (e.g. FF0B:0104) are not opened by the Ultra-Link path.
     opens = 0;
     ctx = Poll(UltraCollection(0xFF0B), { { { 0xB5, 0x03 }, UltraSlots(0, 1) } });
     assert(ctx.out.empty() && writes.empty() && opens == 0);
-    std::puts("Keychron driver tests passed (4K Link, 8K Nordic, 1K receiver, Ultra-Link 8K, no battery, filtering).");
+    std::puts("Keychron driver tests passed (4K Link, 8K Nordic, 1K receiver, Ultra-Link 8K, M6 on Link-KM, no battery, filtering).");
 }
